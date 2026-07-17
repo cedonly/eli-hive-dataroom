@@ -26,8 +26,15 @@
   const filterEl = $("filter");
   const openDrive = $("open-drive");
   const refreshBtn = $("refresh-btn");
+  const backBtn = $("back-btn");
   const authBtn = $("auth-btn");
   const signoutBtn = $("signout-btn");
+  const previewModal = $("preview-modal");
+  const previewIframe = $("preview-iframe");
+  const previewTitle = $("preview-title");
+  const previewBadge = $("preview-badge");
+  const previewOpen = $("preview-open");
+  const previewClose = $("preview-close");
   const stateLoading = $("state-loading");
   const stateEmpty = $("state-empty");
   const stateError = $("state-error");
@@ -179,6 +186,14 @@
       });
     });
     openDrive.href = (currentFolder.link || DRIVE_ROOT_URL);
+    if (backBtn) backBtn.disabled = crumbStack.length <= 1;
+  }
+
+  function goBack() {
+    if (crumbStack.length <= 1) return;
+    crumbStack.pop();
+    currentFolder = crumbStack[crumbStack.length - 1];
+    load();
   }
 
   function renderItems(items) {
@@ -216,6 +231,19 @@
       })
       .join("");
 
+    // file clicks open in-app preview (falls back to Drive if no preview possible)
+    grid.querySelectorAll(".card[data-folder='0']").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        const id = el.dataset.id;
+        const item = items.find((x) => x.id === id);
+        if (!item) return;
+        const url = previewUrlFor(item);
+        if (!url) return; // let anchor navigate to Drive
+        e.preventDefault();
+        openPreview(item, url);
+      });
+    });
+
     // folder clicks navigate client-side (demo + live)
     grid.querySelectorAll(".card[data-folder='1']").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -243,6 +271,41 @@
         else img.remove();
       });
     });
+  }
+
+  // Build a Drive preview URL. Returns null in demo mode (no real Drive file to embed).
+  function previewUrlFor(item) {
+    if (!LIVE) return null;
+    if (!item || !item.id) return null;
+    const mt = item.mimeType || "";
+    if (mt.startsWith("application/vnd.google-apps.")) {
+      const wv = item.webViewLink || "";
+      // Google-native docs: swap /edit or /view for /preview
+      const swapped = wv.replace(/\/(edit|view)(\?[^#]*)?(#.*)?$/, "/preview");
+      if (swapped && swapped !== wv) return swapped;
+      if (mt.includes("document")) return `https://docs.google.com/document/d/${item.id}/preview`;
+      if (mt.includes("spreadsheet")) return `https://docs.google.com/spreadsheets/d/${item.id}/preview`;
+      if (mt.includes("presentation")) return `https://docs.google.com/presentation/d/${item.id}/preview`;
+      return `https://drive.google.com/file/d/${item.id}/preview`;
+    }
+    return `https://drive.google.com/file/d/${item.id}/preview`;
+  }
+
+  function openPreview(item, url) {
+    previewIframe.src = url;
+    previewTitle.textContent = item.name || "Preview";
+    previewBadge.textContent = kindLabel(item);
+    previewOpen.href = item.webViewLink || `https://drive.google.com/file/d/${item.id}/view`;
+    previewModal.hidden = false;
+    previewModal.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+  }
+
+  function closePreview() {
+    previewModal.hidden = true;
+    previewModal.setAttribute("aria-hidden", "true");
+    previewIframe.src = "about:blank";
+    document.body.style.overflow = "";
   }
 
   function escapeHtml(s) {
@@ -412,7 +475,16 @@
 
   // ---- Events -----------------------------------------------------------
   refreshBtn.addEventListener("click", load);
+  if (backBtn) backBtn.addEventListener("click", goBack);
   filterEl.addEventListener("input", () => renderItems(currentItems));
+
+  previewClose.addEventListener("click", closePreview);
+  previewModal.addEventListener("click", (e) => {
+    if (e.target && e.target.dataset && e.target.dataset.close === "1") closePreview();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !previewModal.hidden) closePreview();
+  });
 
   // Auto-refresh the live listing every 3 minutes while signed in and the tab is visible.
   if (LIVE) {
