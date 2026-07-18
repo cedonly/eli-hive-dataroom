@@ -156,6 +156,11 @@
 }
 .demo-banner svg { flex: none; }
 
+/* Google sign-in button slot */
+.gsi-slot { display: flex; justify-content: center; margin-top: 10px; }
+.gsi-slot:empty { display: none; margin-top: 0; }
+.gsi-slot:has(*) + #signin-cta { display: none; }
+
 /* Preview modal */
 .preview-modal {
   position: fixed; inset: 0; z-index: 100;

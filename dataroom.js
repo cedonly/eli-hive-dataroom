@@ -13,8 +13,11 @@
   // Set a Google OAuth Web Client ID to enable LIVE listing.
   // Leave "" to render branded demo data (no Drive data is exposed publicly).
   const CLIENT_ID = "784973075726-pt9t0dcgembmg4icd6a2fva05bu4o0n8.apps.googleusercontent.com";
-  const SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
-  const API_BASE = "https://www.googleapis.com/drive/v3/files";
+  // Backend proxy that fronts the Drive API using a service account.
+  // Override in devtools with `window.DATAROOM_API_ORIGIN = "http://localhost:8080"` before load.
+  const API_ORIGIN =
+    (typeof window !== "undefined" && window.DATAROOM_API_ORIGIN) ||
+    "https://dataroom-api-784973075726.us-central1.run.app";
 
   const LIVE = Boolean(CLIENT_ID);
 
@@ -42,13 +45,11 @@
   const lastRefreshEl = $("last-refresh");
 
   // ---- State ------------------------------------------------------------
-  let token = null;
-  let tokenClient = null;
+  let idToken = null;
   let gisReady = false;
   let crumbStack = [{ name: "Eli Hive Data Room", id: DRIVE_ID, link: DRIVE_ROOT_URL }];
   let currentFolder = { name: "Eli Hive Data Room", id: DRIVE_ID, link: DRIVE_ROOT_URL };
   let currentItems = [];
-  let inFlight = null;
 
   // ---- Branded SVG icons ------------------------------------------------
   const ICON = {
@@ -316,32 +317,21 @@
   }
 
   // ---- Data sources -----------------------------------------------------
-  async function loadDriveFolder(parentId) {
-    const fields = "files(id,name,mimeType,modifiedTime,size,webViewLink,iconLink,hasThumbnail,thumbnailLink,parents),nextPageToken";
-    let pageToken = null;
-    const all = [];
-    do {
-      const params = new URLSearchParams({
-        driveId: DRIVE_ID,
-        corpora: "drive",
-        includeItemsFromAllDrives: "true",
-        supportsAllDrives: "true",
-        q: `'${parentId}' in parents and trashed=false`,
-        pageSize: "200",
-        fields,
-      });
-      if (pageToken) params.set("pageToken", pageToken);
-      const res = await fetch(`${API_BASE}?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.status === 401) { token = null; await ensureToken(); return loadDriveFolder(parentId); }
-      if (res.status === 403) { throw { accessDenied: true }; }
-      if (!res.ok) { throw new Error(`Drive API ${res.status}`); }
-      const data = await res.json();
-      (data.files || []).forEach((f) => all.push({ ...f, isFolder: f.mimeType === "application/vnd.google-apps.folder" }));
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-    return all;
+  async function apiList(parentId) {
+    const url = `${API_ORIGIN}/api/list?folderId=${encodeURIComponent(parentId)}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    if (res.status === 401) {
+      // ID token expired or invalid — drop it and force a fresh sign-in.
+      idToken = null;
+      updateAuthUI();
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+    if (res.status === 403) throw { accessDenied: true };
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const data = await res.json();
+    return data.files || [];
   }
 
   function loadDemo(parentId) {
@@ -360,9 +350,9 @@
   async function load() {
     renderCrumbs();
 
-    // Live mode requires a token. If the user hasn't signed in yet, show a
+    // Live mode requires an ID token. If the user hasn't signed in yet, show a
     // sign-in prompt instead of auto-prompting (which can fire before GIS is ready).
-    if (LIVE && !token) {
+    if (LIVE && !idToken) {
       grid.innerHTML = "";
       countEl.textContent = "";
       lastRefreshEl.hidden = true;
@@ -379,7 +369,7 @@
     try {
       let items;
       if (LIVE) {
-        items = await loadDriveFolder(currentFolder.id);
+        items = await apiList(currentFolder.id);
       } else {
         items = await loadDemo(currentFolder.id);
       }
@@ -416,6 +406,10 @@
   }
 
   // ---- Google Identity Services ----------------------------------------
+  // Uses the "Sign in with Google" ID token flow (openid + email + profile).
+  // No Drive scope on the client — the backend proxies Drive via a service
+  // account, so this stays inside Google's non-sensitive scope tier and
+  // doesn't require OAuth app verification.
   function initGIS() {
     if (!LIVE) return;
     const s = document.createElement("script");
@@ -423,52 +417,65 @@
     s.async = true;
     s.defer = true;
     s.onload = () => {
-      tokenClient = google.accounts.oauth2.initTokenClient({
+      google.accounts.id.initialize({
         client_id: CLIENT_ID,
-        scope: SCOPE,
-        callback: (resp) => {
-          if (resp.access_token) {
-            token = resp.access_token;
-            updateAuthUI();
-            const cont = inFlight; inFlight = null;
-            if (cont) cont();      // mid-session 401 re-auth → continue the running load
-            else load();           // fresh sign-in → populate the grid
-          } else if (resp.error) {
-            handleError(new Error("Google sign-in was not completed."));
-          }
-        },
+        callback: onCredential,
+        auto_select: true,
+        itp_support: true,
+        use_fedcm_for_prompt: true,
       });
+      renderGoogleButton();
       gisReady = true;
       updateAuthUI();
+      // Try silent One Tap for returning visitors — falls back to the rendered button.
+      google.accounts.id.prompt();
       load();
     };
     document.head.appendChild(s);
   }
 
-  function ensureToken() {
-    return new Promise((resolve, reject) => {
-      if (token) return resolve();
-      if (!gisReady) return reject(new Error("Google sign-in is not ready yet. Try again in a moment."));
-      inFlight = resolve;
-      tokenClient.requestAccessToken({ prompt: "consent" });
+  function renderGoogleButton() {
+    const slot = document.getElementById("gsi-button-slot");
+    if (!slot || !google || !google.accounts || !google.accounts.id) return;
+    slot.innerHTML = "";
+    google.accounts.id.renderButton(slot, {
+      type: "standard",
+      theme: "filled_black",
+      size: "large",
+      shape: "pill",
+      text: "signin_with",
+      logo_alignment: "left",
     });
+  }
+
+  function onCredential(resp) {
+    if (!resp || !resp.credential) {
+      handleError(new Error("Google sign-in was not completed."));
+      return;
+    }
+    idToken = resp.credential;
+    updateAuthUI();
+    load();
   }
 
   function updateAuthUI() {
     if (!LIVE) { authBtn.hidden = true; signoutBtn.hidden = true; return; }
-    authBtn.hidden = Boolean(token);
-    signoutBtn.hidden = !token;
+    authBtn.hidden = true; // sign-in happens via the panel button, not the header
+    signoutBtn.hidden = !idToken;
   }
 
-  function signIn() { if (gisReady) tokenClient.requestAccessToken({ prompt: "consent" }); }
-  authBtn.addEventListener("click", signIn);
+  function signInFallback() {
+    if (!gisReady) return;
+    google.accounts.id.prompt();
+  }
+  authBtn.addEventListener("click", signInFallback);
   const signinCta = $("signin-cta");
-  if (signinCta) signinCta.addEventListener("click", signIn);
+  if (signinCta) signinCta.addEventListener("click", signInFallback);
   signoutBtn.addEventListener("click", () => {
-    if (token && google && google.accounts && google.accounts.oauth2) {
-      google.accounts.oauth2.revoke(token, () => {});
+    if (google && google.accounts && google.accounts.id) {
+      google.accounts.id.disableAutoSelect();
     }
-    token = null;
+    idToken = null;
     updateAuthUI();
     load();
   });
@@ -489,10 +496,10 @@
   // Auto-refresh the live listing every 3 minutes while signed in and the tab is visible.
   if (LIVE) {
     setInterval(() => {
-      if (token && document.visibilityState === "visible") load();
+      if (idToken && document.visibilityState === "visible") load();
     }, 3 * 60 * 1000);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && token) load();
+      if (document.visibilityState === "visible" && idToken) load();
     });
   }
 
