@@ -60,6 +60,7 @@ async function getAllowedEmails() {
   } while (pageToken);
 
   permsCache.set(DRIVE_ID, { at: now, emails });
+  console.log("perms refresh:", DRIVE_ID, "count:", emails.size, "emails:", Array.from(emails));
   return emails;
 }
 
@@ -87,7 +88,9 @@ async function requireAuthorized(req, res) {
     return null;
   }
   const allowed = await getAllowedEmails();
-  if (!allowed.has(user.email)) {
+  const ok = allowed.has(user.email);
+  console.log("auth check:", user.email, "allowed:", ok, "size:", allowed.size);
+  if (!ok) {
     res.status(403).json({ error: "forbidden" });
     return null;
   }
