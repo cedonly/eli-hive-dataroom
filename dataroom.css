@@ -156,6 +156,55 @@
 }
 .demo-banner svg { flex: none; }
 
+/* Sectioned root layout */
+.dr-sections { display: flex; flex-direction: column; gap: 26px; margin-top: 6px; }
+.dr-section {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 18px 20px;
+  box-shadow: 0 10px 26px -22px rgba(28,22,17,0.35);
+}
+.dr-section__head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.dr-section__title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 1.05rem; font-weight: 700; color: var(--charcoal);
+  letter-spacing: -0.005em;
+}
+.dr-section__title::before {
+  content: "";
+  display: inline-block;
+  width: 8px; height: 8px;
+  background: var(--amber);
+  margin-right: 10px;
+  transform: rotate(45deg);
+  vertical-align: middle;
+}
+.dr-section__meta {
+  font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.08em;
+  color: var(--warmgray-2); text-transform: uppercase; white-space: nowrap;
+}
+.dr-section__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+}
+.dr-section__more {
+  margin-top: 14px; display: flex; justify-content: flex-end;
+}
+.dr-section--other .dr-section__title::before { background: var(--warmgray); }
+
+/* Download button spinner */
+#download-btn.is-loading { pointer-events: none; opacity: 0.7; }
+#download-btn.is-loading svg { animation: dl-spin 1s linear infinite; }
+@keyframes dl-spin { to { transform: rotate(360deg); } }
+
 /* Google sign-in button slot */
 .gsi-slot { display: flex; justify-content: center; margin-top: 10px; }
 .gsi-slot:empty { display: none; margin-top: 0; }

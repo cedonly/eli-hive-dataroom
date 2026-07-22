@@ -29,6 +29,7 @@
   const filterEl = $("filter");
   const openDrive = $("open-drive");
   const refreshBtn = $("refresh-btn");
+  const downloadBtn = $("download-btn");
   const backBtn = $("back-btn");
   const authBtn = $("auth-btn");
   const signoutBtn = $("signout-btn");
@@ -50,6 +51,7 @@
   let crumbStack = [{ name: "Eli Hive Data Room", id: DRIVE_ID, link: DRIVE_ROOT_URL }];
   let currentFolder = { name: "Eli Hive Data Room", id: DRIVE_ID, link: DRIVE_ROOT_URL };
   let currentItems = [];
+  let rootChildrenCache = null;
 
   // ---- Branded SVG icons ------------------------------------------------
   const ICON = {
@@ -197,6 +199,140 @@
     load();
   }
 
+  const SECTION_PREVIEW = 6;
+
+  function cardHtml(it) {
+    const href = it.webViewLink || (it.isFolder ? "#" : DRIVE_ROOT_URL);
+    const thumb = it.thumbnailLink
+      ? `<img class="thumb-img" loading="lazy" alt="" src="${it.thumbnailLink}" data-icon="${escapeHtml(it.iconLink || "")}" data-kind="${kindOf(it)}">`
+      : iconFor(it);
+    const badge = it.isFolder ? `<span class="card__badge">Folder</span>` : `<span class="card__badge">${kindLabel(it)}</span>`;
+    const meta = [it.modified || (it.modifiedTime ? fmtDate(it.modifiedTime) : ""), it.sizeLabel || (it.size ? fmtSize(it.size) : null)].filter(Boolean);
+    const metaHtml = meta.length ? `<div class="card__meta">${meta.map((m, i) => i === 0 ? `<span>${escapeHtml(m)}</span>` : `<span class="mv"><span class="dot">·</span> ${escapeHtml(m)}</span>`).join("")}</div>` : "";
+    return `<a class="card ${it.isFolder ? "is-folder" : ""}" href="${href}" ${it.isFolder ? "" : 'target="_blank" rel="noopener"'} data-id="${escapeHtml(it.id)}" data-folder="${it.isFolder ? "1" : "0"}">
+      <div class="card__thumb">${badge}${thumb}</div>
+      <div class="card__body">
+        <div class="card__name">${wrapName(it.name)}</div>
+        ${metaHtml}
+      </div>
+    </a>`;
+  }
+
+  function wireCardEvents(rootEl, items) {
+    rootEl.querySelectorAll(".card[data-folder='0']").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        const id = el.dataset.id;
+        const item = items.find((x) => x.id === id);
+        if (!item) return;
+        const url = previewUrlFor(item);
+        if (!url) return;
+        e.preventDefault();
+        openPreview(item, url);
+      });
+    });
+    rootEl.querySelectorAll(".card[data-folder='1']").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        const id = el.dataset.id;
+        const item = items.find((x) => x.id === id);
+        if (!item) return;
+        e.preventDefault();
+        const link = item.webViewLink && item.webViewLink !== "#" ? item.webViewLink : DRIVE_ROOT_URL;
+        crumbStack.push({ name: item.name, id: item.id, link });
+        currentFolder = crumbStack[crumbStack.length - 1];
+        load();
+      });
+    });
+    rootEl.querySelectorAll("img.thumb-img").forEach((img) => {
+      let stage = 0;
+      img.addEventListener("error", () => {
+        const icon = img.dataset.icon;
+        if (stage === 0 && icon) { stage = 1; img.src = icon; return; }
+        stage = 2;
+        const el = svgEl(img.dataset.kind);
+        if (el) img.replaceWith(el);
+        else img.remove();
+      });
+    });
+  }
+
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  }
+
+  function renderSections(rootItems, childrenByFolderId) {
+    currentItems = rootItems;
+    const q = (filterEl.value || "").trim().toLowerCase();
+
+    const folders = rootItems.filter((it) => it.isFolder).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const looseFiles = rootItems.filter((it) => !it.isFolder).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+    const sections = folders.map((f) => {
+      const children = (childrenByFolderId[f.id] || []).slice().sort((a, b) => (a.isFolder === b.isFolder ? (a.name || "").localeCompare(b.name || "") : a.isFolder ? -1 : 1));
+      return { id: f.id, name: f.name, folder: f, items: children };
+    });
+    if (looseFiles.length) {
+      sections.push({ id: "__other__", name: "Other", folder: null, items: looseFiles });
+    }
+
+    const filteredSections = q
+      ? sections
+          .map((s) => ({ ...s, items: s.items.filter((it) => (it.name || "").toLowerCase().includes(q)) }))
+          .filter((s) => s.items.length)
+      : sections;
+
+    const totalVisible = filteredSections.reduce((n, s) => n + s.items.length, 0);
+    countEl.textContent = totalVisible ? `${totalVisible} item${totalVisible > 1 ? "s" : ""}` : "";
+
+    if (!filteredSections.length) {
+      grid.innerHTML = "";
+      if (q) showEmpty("No results", `No files match “${escapeHtml(q)}” in the data room.`);
+      else showEmpty("This data room is empty", "There are no files or subfolders here yet.");
+      return;
+    }
+    showState(null);
+
+    const html = filteredSections
+      .map((s) => {
+        const shown = q ? s.items : s.items.slice(0, SECTION_PREVIEW);
+        const remaining = q ? 0 : Math.max(0, s.items.length - shown.length);
+        const cards = shown.map(cardHtml).join("");
+        const totalLabel = `${s.items.length} item${s.items.length === 1 ? "" : "s"}`;
+        const moreBtn = remaining > 0 && s.folder
+          ? `<div class="dr-section__more"><button class="ghost-link btn--sm" type="button" data-open-folder="${escapeHtml(s.folder.id)}">Show all ${s.items.length} →</button></div>`
+          : "";
+        const cls = s.folder ? "dr-section" : "dr-section dr-section--other";
+        return `<section class="${cls}" data-section-id="${escapeHtml(s.id)}">
+          <header class="dr-section__head">
+            <h2 class="dr-section__title">${escapeHtml(s.name)}</h2>
+            <span class="dr-section__meta">${totalLabel}</span>
+          </header>
+          <div class="dr-section__grid">${cards}</div>
+          ${moreBtn}
+        </section>`;
+      })
+      .join("");
+
+    grid.innerHTML = `<div class="dr-sections">${html}</div>`;
+
+    filteredSections.forEach((s) => {
+      const el = grid.querySelector(`[data-section-id="${cssEscape(s.id)}"] .dr-section__grid`);
+      if (el) wireCardEvents(el, s.items);
+    });
+
+    grid.querySelectorAll("[data-open-folder]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const folderId = btn.getAttribute("data-open-folder");
+        const folder = folders.find((f) => f.id === folderId);
+        if (!folder) return;
+        const link = folder.webViewLink && folder.webViewLink !== "#" ? folder.webViewLink : DRIVE_ROOT_URL;
+        crumbStack.push({ name: folder.name, id: folder.id, link });
+        currentFolder = crumbStack[crumbStack.length - 1];
+        load();
+      });
+    });
+  }
+
   function renderItems(items) {
     currentItems = items;
     const q = (filterEl.value || "").trim().toLowerCase();
@@ -334,6 +470,51 @@
     return data.files || [];
   }
 
+  async function downloadZip() {
+    if (!LIVE || !idToken) {
+      handleError(new Error("Sign in to download the data room."));
+      return;
+    }
+    const originalLabel = downloadBtn.querySelector(".download-btn__label");
+    const prevText = originalLabel ? originalLabel.textContent : null;
+    downloadBtn.classList.add("is-loading");
+    downloadBtn.disabled = true;
+    if (originalLabel) originalLabel.textContent = "Preparing…";
+
+    try {
+      const res = await fetch(`${API_ORIGIN}/api/zip`, {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (res.status === 401) {
+        idToken = null;
+        updateAuthUI();
+        throw new Error("Your session has expired. Please sign in again.");
+      }
+      if (res.status === 403) throw { accessDenied: true };
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const nameMatch = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+      const filename = decodeURIComponent(nameMatch ? nameMatch[1] : `eli-hive-dataroom-${new Date().toISOString().slice(0, 10)}.zip`);
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (err) {
+      handleError(err);
+    } finally {
+      downloadBtn.classList.remove("is-loading");
+      downloadBtn.disabled = false;
+      if (originalLabel && prevText != null) originalLabel.textContent = prevText;
+    }
+  }
+
   function loadDemo(parentId) {
     const items = parentId === DRIVE_ID ? DEMO_ROOT : (DEMO_CHILDREN[parentId] || []);
     return Promise.resolve(
@@ -367,13 +548,20 @@
     refreshBtn.disabled = true;
 
     try {
-      let items;
-      if (LIVE) {
-        items = await apiList(currentFolder.id);
+      const items = LIVE ? await apiList(currentFolder.id) : await loadDemo(currentFolder.id);
+      const atRoot = currentFolder.id === DRIVE_ID;
+      if (atRoot) {
+        const folders = items.filter((it) => it.isFolder);
+        const childrenPairs = await Promise.all(
+          folders.map(async (f) => [f.id, LIVE ? await apiList(f.id) : await loadDemo(f.id)])
+        );
+        const childrenByFolderId = Object.fromEntries(childrenPairs);
+        rootChildrenCache = childrenByFolderId;
+        renderSections(items, childrenByFolderId);
       } else {
-        items = await loadDemo(currentFolder.id);
+        rootChildrenCache = null;
+        renderItems(items);
       }
-      renderItems(items);
       markRefreshed();
     } catch (err) {
       handleError(err);
@@ -459,9 +647,10 @@
   }
 
   function updateAuthUI() {
-    if (!LIVE) { authBtn.hidden = true; signoutBtn.hidden = true; return; }
+    if (!LIVE) { authBtn.hidden = true; signoutBtn.hidden = true; if (downloadBtn) downloadBtn.hidden = true; return; }
     authBtn.hidden = true; // sign-in happens via the panel button, not the header
     signoutBtn.hidden = !idToken;
+    if (downloadBtn) downloadBtn.hidden = !idToken;
   }
 
   function signInFallback() {
@@ -483,7 +672,14 @@
   // ---- Events -----------------------------------------------------------
   refreshBtn.addEventListener("click", load);
   if (backBtn) backBtn.addEventListener("click", goBack);
-  filterEl.addEventListener("input", () => renderItems(currentItems));
+  if (downloadBtn) downloadBtn.addEventListener("click", downloadZip);
+  filterEl.addEventListener("input", () => {
+    if (currentFolder.id === DRIVE_ID && rootChildrenCache) {
+      renderSections(currentItems, rootChildrenCache);
+    } else {
+      renderItems(currentItems);
+    }
+  });
 
   previewClose.addEventListener("click", closePreview);
   previewModal.addEventListener("click", (e) => {
