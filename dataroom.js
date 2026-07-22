@@ -313,6 +313,7 @@
       })
       .join("");
 
+    grid.classList.add("is-sections");
     grid.innerHTML = `<div class="dr-sections">${html}</div>`;
 
     filteredSections.forEach((s) => {
@@ -335,6 +336,7 @@
 
   function renderItems(items) {
     currentItems = items;
+    grid.classList.remove("is-sections");
     const q = (filterEl.value || "").trim().toLowerCase();
     const filtered = q ? items.filter((it) => (it.name || "").toLowerCase().includes(q)) : items;
     filtered.sort((a, b) => (a.isFolder === b.isFolder ? (a.name || "").localeCompare(b.name || "") : a.isFolder ? -1 : 1));

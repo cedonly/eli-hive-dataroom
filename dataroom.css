@@ -157,6 +157,7 @@
 .demo-banner svg { flex: none; }
 
 /* Sectioned root layout */
+.dr-grid.is-sections { display: block; }
 .dr-sections { display: flex; flex-direction: column; gap: 26px; margin-top: 6px; }
 .dr-section {
   background: #fff;
